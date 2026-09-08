@@ -3,56 +3,36 @@ import { NextResponse } from "next/server"
 
 export const dynamic = "force-dynamic"
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-)
+export async function GET() {
+  try {
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
+    const hfKey = process.env.HF_API_KEY
 
-const HF_KEY = process.env.HF_API_KEY
-const HF_MODEL = "cardiffnlp/twitter-roberta-base-sentiment-latest"
+    const supabase = createClient(supabaseUrl, serviceKey)
 
-async function aiSentiment(text: string){
-  if(!HF_KEY) return { label:"neutral", score:0.5 }
-  try{
-    const res = await fetch(`https://api-inference.huggingface.co/models/${HF_MODEL}`,{
-      method:"POST",
-      headers:{ Authorization:`Bearer ${HF_KEY}`, "Content-Type":"application/json" },
-      body: JSON.stringify({ inputs: text.slice(0,500) })
-    })
-    const j = await res.json()
-    const arr = Array.isArray(j[0])? j[0] : j
-    const top = arr?.sort((a:any,b:any)=>b.score-a.score)?.[0]
-    if(!top) return { label:"neutral", score:0.5 }
-    const l = top.label.toLowerCase()
-    if(l.includes("pos")) return { label:"positive", score:top.score }
-    if(l.includes("neg")) return { label:"negative", score:top.score }
-    return { label:"neutral", score:top.score }
-  }catch{ return { label:"neutral", score:0.5 } }
-}
+    const { data: politicians, error } = await supabase
+      .from("politicians")
+      .select("id, name")
+      .limit(5)
 
-export async function GET(){
-  const { data: politicians } = await supabase.from("politicians").select("id,name").limit(20)
-  if(!politicians || politicians.length===0) return NextResponse.json({ error:"no politicians found", ok:false })
+    if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 })
+    if (!politicians || politicians.length === 0) return NextResponse.json({ ok: false, error: "no politicians in db" })
 
-  let inserted = 0
-  for(const pol of politicians){
-    const samples = [
-      `${pol.name} development record praised in Bomet`,
-      `Residents complain about ${pol.name} failed promises`,
-      `${pol.name} bursary program helps students`
-    ]
-    for(const content of samples){
-      const ai = await aiSentiment(content)
-      await supabase.from("mentions").insert({
-        politician_id: pol.id,
+    let inserted = 0
+    for (const p of politicians) {
+      const { error: insErr } = await supabase.from("mentions").insert({
+        politician_id: p.id,
         platform: "X",
-        content,
-        sentiment: ai.label,
-        sentiment_score: ai.score
+        content: `${p.name} development project praised in Bomet`,
+        sentiment: "positive",
+        sentiment_score: 0.85
       })
-      inserted++
-      await new Promise(r=>setTimeout(r, 600))
+      if (!insErr) inserted++
     }
+
+    return NextResponse.json({ ok: true, hasKey: !!hfKey, inserted, politicians: politicians.length })
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e.message }, { status: 500 })
   }
-  return NextResponse.json({ ok:true, model:HF_MODEL, hasKey:!!HF_KEY, inserted })
 }
