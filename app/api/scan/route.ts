@@ -1,6 +1,7 @@
 ﻿import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
-const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!)
+import { createServerClient } from "@supabase/ssr"
+import { cookies } from "next/headers"
 
 function getTerms(pol:any){return [pol.name.split(" ").pop(),...(pol.keywords||[])].map((s:string)=>String(s).trim()).filter(Boolean).slice(0,2)}
 
@@ -30,14 +31,30 @@ async function scrapeRealTweets(term:string){
 }
 
 export async function POST(req:Request){
-  const body = await req.json().catch(()=>({}))
-  let q = supabase.from("politicians").select("*")
-  if(body.politician_id) q=q.eq("id", body.politician_id)
-  const {data:pols} = await q
-  if(!pols?.length) return NextResponse.json({success:false, message:"No politicians"})
+  const cookieStore = await cookies()
+  const supabaseAuth = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        get(name: string){ return cookieStore.get(name)?.value },
+        set(){}, remove(){}
+      }
+    }
+  )
 
+  const { data: { user } } = await supabaseAuth.auth.getUser()
+  if(!user){
+    return NextResponse.json({ success:false, error:"Unauthorized - login to scan your profile" }, { status: 401 })
+  }
+
+  // ONLY scan politicians owned by this user
+  const { data: pols } = await supabaseAuth.from("politicians").select("*").eq("user_id", user.id)
+  if(!pols?.length) return NextResponse.json({ success:false, message:"No profile found. Create profile first." })
+
+  const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!)
   let total=0
-  let samples:any[]=[]
+
   for(const p of pols){
     const terms = getTerms(p)
     for(const term of terms){
@@ -55,7 +72,6 @@ export async function POST(req:Request){
         }
         const {error} = await supabase.from("mentions").upsert(row, {onConflict:"platform,external_id"})
         if(!error) total++
-        samples.push(row)
         if(total>=15) break
       }
       if(total>=15) break
@@ -65,11 +81,11 @@ export async function POST(req:Request){
 
   return NextResponse.json({
     success:true,
-    mode:"REAL FREE SCRAPER - NO X CREDITS NEEDED",
+    mode:"PRIVATE REAL SCAN - only your profile",
     scanned:pols.length,
     found:total,
-    sample: samples[0]?.content?.slice(0,120),
-    message: total>0? `Found ${total} REAL tweets` : "No mirrors responded, try again in 30s. Nitter mirrors sometimes down."
+    owner: user.email,
+    message: total>0? `Found ${total} real mentions for you` : "No new mentions yet, try again"
   })
 }
-export async function GET(){ return POST(new Request("https://lead-eosin.vercel.app/api/scan",{method:"POST", body:"{}"})) }
+export async function GET(){ return POST(new Request("https://lead-eosin.vercel.app/api/scan",{method:"POST"})) }
