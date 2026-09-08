@@ -2,72 +2,31 @@
 import { createClient } from "@supabase/supabase-js"
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!)
 
-function getTerms(pol:any){return [pol.name,...(pol.keywords||[])].map((s:string)=>String(s).trim()).filter(Boolean).slice(0,2)}
+function getTerms(pol:any){return [pol.name.split(" ").pop(),...(pol.keywords||[])].map((s:string)=>String(s).trim()).filter(Boolean).slice(0,2)}
 
-async function searchXReal(polId:string, terms:string[]){
-  const bearer = process.env.X_BEARER_TOKEN
-  const results:any[] = []
-  let lastError = null
-
-  // 1. TRY OFFICIAL X API FIRST (if you have Basic $200 tier)
-  if(bearer){
+async function scrapeRealTweets(term:string){
+  const mirrors = ["nitter.poast.org","nitter.privacydev.net","nitter.fdn.fr","nitter.net"]
+  for(const host of mirrors){
     try{
-      const q = terms.join(" OR ")
-      const url = `https://api.twitter.com/2/tweets/search/recent?query=${encodeURIComponent(q)}&max_results=10&tweet.fields=created_at,text&expansions=author_id&user.fields=username`
-      const r = await fetch(url, {headers:{Authorization:`Bearer ${bearer}`}, cache:"no-store"})
-      const j = await r.json()
-      if(r.ok && j.data){
-        const users = new Map((j.includes?.users||[]).map((u:any)=>[u.id,u.username]))
-        return {data: j.data.map((t:any)=>({
-          politician_id:polId, platform:"X / Twitter", content:t.text,
-          sentiment:"neutral", url:`https://x.com/i/web/status/${t.id}`,
-          external_id:`x_${t.id}`, author:`@${users.get(t.author_id)||"user"}`,
-          posted_at:t.created_at
-        })), error:null}
-      }else{ lastError = `X Official: ${r.status} ${JSON.stringify(j).slice(0,300)}` }
-    }catch(e:any){ lastError = e.message }
-  }
-
-  // 2. FREE WORKAROUND - RapidAPI / Nitter scraper (works without Basic)
-  // Uses syndication endpoint - no auth needed, returns REAL tweets
-  for(const term of terms){
-    try{
-      const r = await fetch(`https://cdn.syndication.twimg.com/widgets/timelines/1706000000000000000?query=${encodeURIComponent(term)}&lang=en`, {cache:"no-store"})
-      // fallback to search via nitter
-      if(!r.ok){
-        const r2 = await fetch(`https://nitter.net/search?f=tweets&q=${encodeURIComponent(term)}`, {headers:{"User-Agent":"Mozilla/5.0"}, cache:"no-store"})
-        const html = await r2.text()
-        // crude parse - extract tweet text
-        const matches = [...html.matchAll(/<div class="tweet-content[^>]*>(.*?)<\/div>/gs)].slice(0,5)
-        for(const m of matches){
-          const text = m[1].replace(/<[^>]+>/g,"").trim()
-          if(text.length>10){
-            results.push({
-              politician_id:polId, platform:"X / Twitter", content:text,
-              sentiment:"neutral", url:`https://x.com/search?q=${encodeURIComponent(term)}`,
-              external_id:`x_nitter_${Date.now()}_${Math.random()}`, author:"X User", posted_at:new Date().toISOString()
-            })
-          }
+      const url = `https://${host}/search?f=tweets&q=${encodeURIComponent(term)}`
+      const r = await fetch(url, {headers:{"User-Agent":"Mozilla/5.0"}, cache:"no-store", signal: AbortSignal.timeout(8000)})
+      if(!r.ok) continue
+      const html = await r.text()
+      const blocks = [...html.matchAll(/<div class="tweet-content[^>]*>([\s\S]*?)<\/div>/g)].slice(0,8)
+      const times = [...html.matchAll(/<span class="tweet-date"><a[^>]*title="([^"]+)"/g)]
+      const links = [...html.matchAll(/<a class="tweet-link" href="([^"]+)"/g)]
+      if(blocks.length===0) continue
+      return blocks.map((b,i)=>{
+        const text = b[1].replace(/<[^>]+>/g,"").trim()
+        return {
+          content:text,
+          url: links[i]? `https://x.com${links[i][1].replace("#m","")}` : `https://x.com/search?q=${encodeURIComponent(term)}`,
+          posted_at: times[i]? new Date(times[i][1]).toISOString() : new Date().toISOString()
         }
-      }
-    }catch(e){ console.log(e) }
+      }).filter(t=>t.content.length>15)
+    }catch(e){ continue }
   }
-
-  // 3. If still empty, try open public search via twitter api alternative
-  if(results.length===0 && lastError && lastError.includes("403")){
-    return {data:[], error:`FREE X token cannot search. X requires Basic $200 plan for search API. Error: ${lastError}. SOLUTION: Use rapidapi.com Twitter API (free) or upgrade. Showing 0 until you add RAPIDAPI_KEY` }
-  }
-
-  return {data:results, error:lastError}
-}
-
-async function scanOne(pol:any){
-  const terms = getTerms(pol)
-  const x = await searchXReal(pol.id, terms)
-  if(x.data.length>0){
-    await supabase.from("mentions").upsert(x.data, {onConflict:"platform,external_id"})
-  }
-  return x
+  return []
 }
 
 export async function POST(req:Request){
@@ -77,16 +36,40 @@ export async function POST(req:Request){
   const {data:pols} = await q
   if(!pols?.length) return NextResponse.json({success:false, message:"No politicians"})
 
-  let total=0, lastErr=null, debug=null
-  for(const p of pols){ const r=await scanOne(p); total+=r.data.length; lastErr=r.error; debug=r }
+  let total=0
+  let samples:any[]=[]
+  for(const p of pols){
+    const terms = getTerms(p)
+    for(const term of terms){
+      const tweets = await scrapeRealTweets(term)
+      for(const t of tweets){
+        const row = {
+          politician_id:p.id,
+          platform:"X / Twitter",
+          content:t.content,
+          sentiment:t.content.toLowerCase().includes("corrupt")||t.content.toLowerCase().includes("bad")?"negative":t.content.toLowerCase().includes("good")||t.content.toLowerCase().includes("great")?"positive":"neutral",
+          url:t.url,
+          external_id:`x_${Buffer.from(t.url+t.content.slice(0,20)).toString("base64").slice(0,20)}`,
+          author:"X User",
+          posted_at:t.posted_at
+        }
+        const {error} = await supabase.from("mentions").upsert(row, {onConflict:"platform,external_id"})
+        if(!error) total++
+        samples.push(row)
+        if(total>=15) break
+      }
+      if(total>=15) break
+    }
+    if(total>=15) break
+  }
 
   return NextResponse.json({
     success:true,
-    mode: process.env.X_BEARER_TOKEN? "REAL - checking X API tier" : "NO TOKEN",
-    scanned:pols.length, found:total,
-    x_error:lastErr,
-    debug: debug?.data?.[0]?.content?.slice(0,100),
-    message: total===0? `0 real found. Reason: ${lastErr||"No tweets for terms in last 7d. Try broader keywords like just 'Ruto' not 'William Ruto'"}` : `Found ${total} REAL`
+    mode:"REAL FREE SCRAPER - NO X CREDITS NEEDED",
+    scanned:pols.length,
+    found:total,
+    sample: samples[0]?.content?.slice(0,120),
+    message: total>0? `Found ${total} REAL tweets` : "No mirrors responded, try again in 30s. Nitter mirrors sometimes down."
   })
 }
 export async function GET(){ return POST(new Request("https://lead-eosin.vercel.app/api/scan",{method:"POST", body:"{}"})) }
