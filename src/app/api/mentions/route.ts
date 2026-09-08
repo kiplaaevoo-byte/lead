@@ -1,43 +1,60 @@
-import { NextResponse } from "next/server";
+import { NextResponse } from "next/server"
+import { createClient } from "@supabase/supabase-js"
+import { createServerClient } from "@supabase/ssr"
+import { cookies } from "next/headers"
 
-export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-  const name = searchParams.get("name") || "";
-  const county = searchParams.get("county") || "";
-  const aliases = searchParams.get("aliases") || ""; // comma separated nicknames
-
-  // Build search queries for meta_1p.content_search
-  const queries = [
-    `${name} ${county}`,
-   ...aliases.split(",").filter(Boolean).map(a => `${a.trim()} ${county}`),
-    `${name} MCA ${county}`,
-    `${name} praised`,
-    `${name} criticized ${county}`
-  ].filter(Boolean);
-
-  // In production, this is where you call meta_1p.content_search
-  // For now we return structured format that your frontend can render
-  // Vercel will call this API: /api/mentions?name=Hon%20Felix&county=Bomet&aliases=Kip,Cheb
-
-  return NextResponse.json({
-    politician: name,
-    county,
-    queries_used: queries,
-    // These will be filled by real meta_1p.content_search on your server
-    // I tested live - example results from Bomet today:
-    sample_live_results: [
-      {
-        platform: "Facebook",
-        author: "Hon. Francis Sigei",
-        date: "2026-09-05",
-        text: "Meeting with MCAs to prepare for President Ruto tour - modern market, industrial park, roads",
-        likes: 550,
-        comments: 340,
-        sentiment: "Divisive - Supporters say 'Two terms' vs critics 'Wapi stima'",
-        url: "https://facebook.com/sigeiraa/posts/..."
+export async function GET(req: Request){
+  const cookieStore = await cookies()
+  const supabaseAuth = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        get(name: string){ return cookieStore.get(name)?.value },
+        set(){}, remove(){}
       }
-    ],
-    instruction: "Connect this API to meta_1p.content_search with ranking_intent=recency and since=last 30 days. Use queries array above.",
-    status: "ready_to_wire"
-  });
+    }
+  )
+
+  const { data: { user } } = await supabaseAuth.auth.getUser()
+  if(!user){
+    return NextResponse.json({ error: "Unauthorized - Please login" }, { status: 401 })
+  }
+
+  const { data: myPols } = await supabaseAuth.from("politicians").select("id").eq("user_id", user.id)
+
+  if(!myPols || myPols.length===0){
+    return NextResponse.json({ mentions: [], message: "No profile linked. Create your politician profile first." })
+  }
+
+  const myPolIds = myPols.map(p=>p.id)
+  const { searchParams } = new URL(req.url)
+  const politician_id = searchParams.get("politician_id")
+
+  if(politician_id && !myPolIds.includes(politician_id)){
+    return NextResponse.json({ error: "Forbidden - Not your profile" }, { status: 403 })
+  }
+
+  const targetIds = politician_id ? [politician_id] : myPolIds
+
+  const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  )
+
+  const { data: mentions, error } = await supabase
+    .from("mentions")
+    .select("*")
+    .in("politician_id", targetIds)
+    .order("posted_at", { ascending: false })
+    .limit(100)
+
+  if(error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+  return NextResponse.json({ 
+    mentions,
+    private: true,
+    owner: user.email,
+    count: mentions?.length || 0
+  })
 }
