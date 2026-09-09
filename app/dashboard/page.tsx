@@ -1,8 +1,8 @@
 ﻿"use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { useRouter } from "next/navigation"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { supabase } from "@/lib/supabase"
 
 type Politician = {
@@ -23,7 +23,12 @@ type Politician = {
 
 type Mention = {
   id: string
+  platform?: string | null
+  content?: string | null
   sentiment?: string | null
+  sentiment_score?: number | null
+  is_negative_alert?: boolean | null
+  created_at?: string | null
 }
 
 type Entitlement = {
@@ -35,41 +40,52 @@ type Entitlement = {
 export default function Dashboard() {
   const router = useRouter()
 
+  const [checked, setChecked] = useState(false)
   const [loading, setLoading] = useState(true)
   const [loggingOut, setLoggingOut] = useState(false)
+
   const [email, setEmail] = useState("")
   const [politician, setPolitician] = useState<Politician | null>(null)
   const [mentions, setMentions] = useState<Mention[]>([])
   const [entitlement, setEntitlement] = useState<Entitlement | null>(null)
-  const [query, setQuery] = useState("")
+
+  const [search, setSearch] = useState("")
+  const [mobileMenu, setMobileMenu] = useState(false)
 
   useEffect(() => {
     let mounted = true
 
-    const init = async () => {
+    const run = async () => {
       try {
         /*
-         * 1. Verify Supabase Auth session
+         * AUTH CHECK
+         *
+         * Keep this first. It prevents the dashboard redirect loop
+         * while still protecting the page.
          */
         const {
-          data: { user },
-          error: authError,
-        } = await supabase.auth.getUser()
+          data: { session },
+          error: sessionError,
+        } = await supabase.auth.getSession()
 
-        if (authError || !user) {
+        console.log("SESSION CHECK:", session)
+
+        if (sessionError || !session) {
+          console.log("No session -> login")
           router.replace("/login")
           return
         }
 
         if (!mounted) return
 
-        setEmail(user.email || "")
+        setEmail(session.user.email || "")
+        setChecked(true)
 
         /*
-         * 2. Load ONLY the authenticated user's politician profile.
+         * Load ONLY the authenticated user's politician profile.
          *
-         * Bernard/demo remains isolated because we explicitly
-         * require is_demo = false.
+         * is_demo=false permanently separates normal users
+         * from the Bernard demo profile.
          */
         const { data: profile, error: profileError } = await supabase
           .from("politicians")
@@ -88,23 +104,28 @@ export default function Dashboard() {
             onboarding_complete,
             is_demo
           `)
-          .eq("user_id", user.id)
+          .eq("user_id", session.user.id)
           .eq("is_demo", false)
           .maybeSingle()
 
         if (profileError) {
-          console.error("Profile loading error:", profileError)
-          router.replace("/register")
+          console.error("PROFILE ERROR:", profileError)
+
+          if (mounted) {
+            setLoading(false)
+          }
+
           return
         }
 
         if (!profile) {
+          console.log("No politician profile found")
           router.replace("/register")
           return
         }
 
         /*
-         * 3. New accounts must complete onboarding first.
+         * Send incomplete accounts to onboarding.
          */
         if (profile.onboarding_complete === false) {
           router.replace("/welcome")
@@ -116,50 +137,53 @@ export default function Dashboard() {
         setPolitician(profile)
 
         /*
-         * 4. Load mentions belonging ONLY to this politician.
+         * Load mentions belonging ONLY to this politician.
          */
-        const { data: mentionData, error: mentionError } = await supabase
-          .from("mentions")
-          .select("id, sentiment")
-          .eq("politician_id", profile.id)
-          .order("created_at", { ascending: false })
+        const { data: mentionData, error: mentionError } =
+          await supabase
+            .from("mentions")
+            .select(`
+              id,
+              platform,
+              content,
+              sentiment,
+              sentiment_score,
+              is_negative_alert,
+              created_at
+            `)
+            .eq("politician_id", profile.id)
+            .order("created_at", { ascending: false })
 
         if (mentionError) {
-          console.warn("Mentions could not be loaded:", mentionError)
+          console.warn("MENTIONS ERROR:", mentionError)
         } else if (mounted) {
           setMentions(mentionData || [])
         }
 
         /*
-         * 5. Load entitlement information.
+         * Load entitlements.
          *
-         * If the table is not available yet, the dashboard still
-         * remains usable instead of crashing.
+         * Failure here should NOT destroy the dashboard.
          */
-        const {
-          data: entitlementData,
-          error: entitlementError,
-        } = await supabase
-          .from("entitlements")
-          .select(`
-            mentions_limit,
-            ward_intel,
-            ai_briefing
-          `)
-          .eq("politician_id", profile.id)
-          .maybeSingle()
+        const { data: entitlementData, error: entitlementError } =
+          await supabase
+            .from("entitlements")
+            .select(`
+              mentions_limit,
+              ward_intel,
+              ai_briefing
+            `)
+            .eq("politician_id", profile.id)
+            .maybeSingle()
 
         if (entitlementError) {
-          console.warn(
-            "Entitlements could not be loaded:",
-            entitlementError
-          )
+          console.warn("ENTITLEMENT ERROR:", entitlementError)
         } else if (mounted) {
           setEntitlement(entitlementData)
         }
+
       } catch (error) {
-        console.error("Dashboard initialization error:", error)
-        router.replace("/login")
+        console.error("DASHBOARD ERROR:", error)
       } finally {
         if (mounted) {
           setLoading(false)
@@ -167,10 +191,10 @@ export default function Dashboard() {
       }
     }
 
-    init()
+    run()
 
     /*
-     * Keep the dashboard synchronized with Supabase Auth.
+     * Listen for authentication changes.
      */
     const {
       data: { subscription },
@@ -194,34 +218,41 @@ export default function Dashboard() {
     try {
       await supabase.auth.signOut()
       router.replace("/login")
+    } catch (error) {
+      console.error("Logout error:", error)
     } finally {
       setLoggingOut(false)
     }
   }
 
   const filteredMentions = useMemo(() => {
-    if (!query.trim()) return mentions
+    const term = search.trim().toLowerCase()
 
-    return mentions.filter((mention) =>
-      (mention.sentiment || "")
-        .toLowerCase()
-        .includes(query.toLowerCase())
-    )
-  }, [mentions, query])
+    if (!term) return mentions
+
+    return mentions.filter((mention) => {
+      return (
+        mention.content?.toLowerCase().includes(term) ||
+        mention.platform?.toLowerCase().includes(term) ||
+        mention.sentiment?.toLowerCase().includes(term)
+      )
+    })
+  }, [mentions, search])
 
   const positive = mentions.filter(
-    (mention) =>
-      mention.sentiment?.toLowerCase() === "positive"
+    (m) => m.sentiment?.toLowerCase() === "positive"
   ).length
 
   const negative = mentions.filter(
-    (mention) =>
-      mention.sentiment?.toLowerCase() === "negative"
+    (m) => m.sentiment?.toLowerCase() === "negative"
   ).length
 
   const neutral = mentions.filter(
-    (mention) =>
-      mention.sentiment?.toLowerCase() === "neutral"
+    (m) => m.sentiment?.toLowerCase() === "neutral"
+  ).length
+
+  const alerts = mentions.filter(
+    (m) => m.is_negative_alert
   ).length
 
   const fullName =
@@ -234,22 +265,42 @@ export default function Dashboard() {
     politician?.party ||
     "Independent"
 
+  const firstName = fullName.split(" ")[0] || "there"
+
   const plan = politician?.plan
     ? politician.plan.charAt(0).toUpperCase() +
       politician.plan.slice(1)
     : "Basic"
 
-  const firstName =
-    fullName.split(" ")[0] || "there"
+  const mentionLimit =
+    entitlement?.mentions_limit ?? 100
 
-  if (loading) {
+  const usagePercentage =
+    mentionLimit > 0
+      ? Math.min((mentions.length / mentionLimit) * 100, 100)
+      : 0
+
+  const sentimentTotal = positive + negative + neutral
+
+  const sentimentScore =
+    sentimentTotal > 0
+      ? Math.round(
+          ((positive - negative) / sentimentTotal) * 100
+        )
+      : 0
+
+  if (!checked || loading) {
     return (
-      <div className="min-h-screen bg-[#050505] text-white flex items-center justify-center">
+      <div className="min-h-screen bg-[#050505] text-white flex items-center justify-center px-6">
         <div className="text-center">
-          <div className="w-10 h-10 border-2 border-white/10 border-t-[#00ff66] rounded-full animate-spin mx-auto" />
+          <div className="w-10 h-10 mx-auto rounded-full border-2 border-white/10 border-t-[#00ff66] animate-spin" />
 
-          <p className="mt-4 text-sm opacity-60">
+          <h2 className="mt-5 font-semibold">
             Loading your intelligence...
+          </h2>
+
+          <p className="mt-2 text-sm text-white/40">
+            Securing your political intelligence workspace.
           </p>
         </div>
       </div>
@@ -259,223 +310,392 @@ export default function Dashboard() {
   return (
     <div className="min-h-screen bg-[#050505] text-white">
 
-      {/* ================= TOP NAV ================= */}
-      <div className="border-b border-white/10 sticky top-0 bg-[#050505]/85 backdrop-blur-xl z-50">
-        <div className="max-w-7xl mx-auto px-4 md:px-6 py-4 flex justify-between items-center">
+      {/* =====================================================
+          TOP NAVIGATION
+      ===================================================== */}
+      <header className="sticky top-0 z-50 border-b border-white/10 bg-[#050505]/90 backdrop-blur-xl">
 
-          <Link
-            href="/"
-            className="font-bold text-xl tracking-tight"
-          >
-            LEAD<span className="text-[#00ff66]">.</span>
-          </Link>
+        <div className="max-w-7xl mx-auto px-4 md:px-6">
 
-          <div className="flex items-center gap-3">
+          <div className="h-16 flex items-center justify-between">
 
-            <div className="hidden sm:block text-right">
-              <p className="text-sm font-medium">
-                {fullName}
-              </p>
+            {/* LOGO */}
+            <Link
+              href="/"
+              className="text-xl font-black tracking-tight"
+            >
+              LEAD<span className="text-[#00ff66]">.</span>
+            </Link>
 
-              <p className="text-[11px] opacity-40">
-                {email}
-              </p>
+            {/* DESKTOP NAV */}
+            <nav className="hidden md:flex items-center gap-7 text-sm">
+
+              <Link
+                href="/dashboard"
+                className="text-[#00ff66] font-semibold"
+              >
+                Dashboard
+              </Link>
+
+              <Link
+                href="/"
+                className="text-white/50 hover:text-white transition"
+              >
+                Intelligence
+              </Link>
+
+              <Link
+                href="/"
+                className="text-white/50 hover:text-white transition"
+              >
+                Reports
+              </Link>
+
+              <Link
+                href="/"
+                className="text-white/50 hover:text-white transition"
+              >
+                Alerts
+              </Link>
+
+            </nav>
+
+            {/* ACCOUNT */}
+            <div className="hidden md:flex items-center gap-4">
+
+              <div className="text-right">
+                <p className="text-xs font-semibold">
+                  {fullName}
+                </p>
+
+                <p className="text-[10px] text-white/35">
+                  {email}
+                </p>
+              </div>
+
+              <button
+                onClick={logout}
+                disabled={loggingOut}
+                className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-xs transition disabled:opacity-50"
+              >
+                {loggingOut ? "..." : "Logout"}
+              </button>
+
             </div>
 
+            {/* MOBILE MENU */}
             <button
-              onClick={logout}
-              disabled={loggingOut}
-              className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 disabled:opacity-50 text-sm transition"
+              onClick={() => setMobileMenu(!mobileMenu)}
+              className="md:hidden px-3 py-2 rounded-xl bg-white/10 text-sm"
             >
-              {loggingOut ? "Logging out..." : "Logout"}
+              Menu
             </button>
 
           </div>
-        </div>
-      </div>
 
-      {/* ================= MAIN ================= */}
+          {mobileMenu && (
+            <div className="md:hidden border-t border-white/10 py-4 space-y-2">
+
+              <Link
+                href="/dashboard"
+                className="block px-4 py-3 rounded-xl bg-white/5"
+              >
+                Dashboard
+              </Link>
+
+              <Link
+                href="/"
+                className="block px-4 py-3 rounded-xl bg-white/5"
+              >
+                Intelligence
+              </Link>
+
+              <Link
+                href="/"
+                className="block px-4 py-3 rounded-xl bg-white/5"
+              >
+                Reports
+              </Link>
+
+              <button
+                onClick={logout}
+                className="w-full text-left px-4 py-3 rounded-xl bg-white/5"
+              >
+                Logout
+              </button>
+
+            </div>
+          )}
+
+        </div>
+      </header>
+
+      {/* =====================================================
+          MAIN CONTENT
+      ===================================================== */}
       <main className="max-w-7xl mx-auto px-4 md:px-6 py-8">
 
-        {/* HEADER */}
-        <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-5">
+        {/* HERO */}
+        <section className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-6">
 
           <div>
-            <p className="text-xs uppercase tracking-[0.2em] text-[#00ff66] font-semibold">
-              Political Intelligence
-            </p>
 
-            <h1 className="text-3xl md:text-4xl font-bold mt-2">
+            <div className="flex items-center gap-2">
+
+              <span className="w-2 h-2 rounded-full bg-[#00ff66] animate-pulse" />
+
+              <span className="text-[11px] uppercase tracking-[0.2em] text-[#00ff66] font-bold">
+                Intelligence Online
+              </span>
+
+            </div>
+
+            <h1 className="text-3xl md:text-5xl font-black tracking-tight mt-3">
               Good to see you, {firstName}.
             </h1>
 
-            <p className="text-sm opacity-50 mt-2">
-              Monitor your political presence, mentions and public sentiment.
+            <p className="text-white/45 text-sm md:text-base mt-3 max-w-2xl">
+              Your political intelligence command center for monitoring
+              mentions, sentiment and emerging public signals.
             </p>
+
           </div>
 
           <div className="flex flex-col sm:flex-row gap-2">
 
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search sentiment..."
-              className="px-4 py-3 rounded-xl bg-[#111] border border-white/10 text-sm w-full sm:w-[220px] outline-none focus:border-[#00ff66]/50 transition"
-            />
+            <div className="relative">
+
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search intelligence..."
+                className="w-full sm:w-[240px] px-4 py-3 rounded-xl bg-[#111] border border-white/10 text-sm outline-none focus:border-[#00ff66]/50 transition"
+              />
+
+            </div>
 
             <Link
               href="/admin"
-              className="px-5 py-3 rounded-xl bg-[#00ff66] text-black text-sm font-bold text-center hover:opacity-90 transition"
+              className="px-5 py-3 rounded-xl bg-[#00ff66] text-black font-bold text-sm text-center hover:opacity-90 transition"
             >
-              + Add
+              + Manage
             </Link>
 
           </div>
-        </div>
 
-        {/* ================= PROFILE CARD ================= */}
-        <div className="mt-7 p-6 rounded-2xl bg-[#111] border border-white/10">
+        </section>
 
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-5">
+        {/* =====================================================
+            PROFILE / STATUS
+        ===================================================== */}
+        <section className="mt-8 p-5 md:p-6 rounded-2xl bg-[#0d0d0d] border border-white/10">
 
-            <div>
-              <div className="flex items-center gap-3">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
 
-                <h2 className="text-xl font-bold">
-                  {fullName}
-                </h2>
+            <div className="flex items-center gap-4">
 
-                <span className="px-2.5 py-1 rounded-full bg-[#00ff66]/10 text-[#00ff66] text-[10px] font-bold uppercase">
-                  {plan}
-                </span>
+              <div className="w-14 h-14 rounded-2xl bg-[#00ff66]/10 border border-[#00ff66]/20 flex items-center justify-center text-xl font-black text-[#00ff66]">
+                {fullName.charAt(0).toUpperCase()}
+              </div>
+
+              <div>
+
+                <div className="flex flex-wrap items-center gap-2">
+
+                  <h2 className="font-bold text-lg">
+                    {fullName}
+                  </h2>
+
+                  <span className="px-2.5 py-1 rounded-full bg-[#00ff66]/10 text-[#00ff66] text-[9px] uppercase font-bold">
+                    {plan}
+                  </span>
+
+                </div>
+
+                <p className="text-xs text-white/40 mt-1">
+                  {politician?.position || "Political Leader"} • {party}
+                </p>
 
               </div>
 
-              <p className="text-sm opacity-50 mt-2">
-                {politician?.position || "Political Leader"} • {party}
-              </p>
             </div>
 
-            <div className="grid grid-cols-3 gap-2 text-center">
+            <div className="grid grid-cols-3 gap-2">
 
-              <div className="px-4 py-2 rounded-xl bg-black/30">
-                <p className="text-xs opacity-40">County</p>
-                <p className="text-sm font-semibold mt-1">
+              <div className="px-4 py-3 rounded-xl bg-black/30 text-center">
+                <p className="text-[9px] uppercase text-white/30">
+                  County
+                </p>
+                <p className="text-xs font-semibold mt-1">
                   {politician?.county || "—"}
                 </p>
               </div>
 
-              <div className="px-4 py-2 rounded-xl bg-black/30">
-                <p className="text-xs opacity-40">Constituency</p>
-                <p className="text-sm font-semibold mt-1">
+              <div className="px-4 py-3 rounded-xl bg-black/30 text-center">
+                <p className="text-[9px] uppercase text-white/30">
+                  Constituency
+                </p>
+                <p className="text-xs font-semibold mt-1">
                   {politician?.constituency || "—"}
                 </p>
               </div>
 
-              <div className="px-4 py-2 rounded-xl bg-black/30">
-                <p className="text-xs opacity-40">Ward</p>
-                <p className="text-sm font-semibold mt-1">
+              <div className="px-4 py-3 rounded-xl bg-black/30 text-center">
+                <p className="text-[9px] uppercase text-white/30">
+                  Ward
+                </p>
+                <p className="text-xs font-semibold mt-1">
                   {politician?.ward || "—"}
                 </p>
               </div>
 
             </div>
-          </div>
-        </div>
 
-        {/* ================= STATS ================= */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mt-5">
+          </div>
+
+        </section>
+
+        {/* =====================================================
+            KPI CARDS
+        ===================================================== */}
+        <section className="grid grid-cols-2 lg:grid-cols-5 gap-3 mt-5">
 
           <div className="p-5 rounded-2xl bg-[#111] border border-white/10">
-            <p className="text-xs opacity-40 uppercase">
-              Total Mentions
+
+            <p className="text-[10px] uppercase tracking-wider text-white/35">
+              Mentions
             </p>
 
-            <p className="text-3xl font-bold mt-2">
+            <p className="text-3xl font-black mt-2">
               {mentions.length}
             </p>
 
-            {entitlement?.mentions_limit != null && (
-              <p className="text-xs opacity-40 mt-1">
-                Plan limit: {entitlement.mentions_limit}
-              </p>
-            )}
+            <p className="text-[10px] text-white/30 mt-1">
+              of {mentionLimit} available
+            </p>
+
           </div>
 
           <div className="p-5 rounded-2xl bg-[#111] border border-white/10">
-            <p className="text-xs opacity-40 uppercase">
+
+            <p className="text-[10px] uppercase tracking-wider text-white/35">
               Positive
             </p>
 
-            <p className="text-3xl font-bold text-[#00ff66] mt-2">
+            <p className="text-3xl font-black text-[#00ff66] mt-2">
               {positive}
             </p>
+
+            <p className="text-[10px] text-white/30 mt-1">
+              favorable signals
+            </p>
+
           </div>
 
           <div className="p-5 rounded-2xl bg-[#111] border border-white/10">
-            <p className="text-xs opacity-40 uppercase">
+
+            <p className="text-[10px] uppercase tracking-wider text-white/35">
               Negative
             </p>
 
-            <p className="text-3xl font-bold mt-2">
+            <p className="text-3xl font-black text-red-400 mt-2">
               {negative}
             </p>
+
+            <p className="text-[10px] text-white/30 mt-1">
+              risk signals
+            </p>
+
           </div>
 
           <div className="p-5 rounded-2xl bg-[#111] border border-white/10">
-            <p className="text-xs opacity-40 uppercase">
-              Neutral
+
+            <p className="text-[10px] uppercase tracking-wider text-white/35">
+              Alerts
             </p>
 
-            <p className="text-3xl font-bold mt-2">
-              {neutral}
+            <p className="text-3xl font-black mt-2">
+              {alerts}
             </p>
+
+            <p className="text-[10px] text-white/30 mt-1">
+              priority signals
+            </p>
+
           </div>
 
-        </div>
+          <div className="p-5 rounded-2xl bg-[#111] border border-white/10 col-span-2 lg:col-span-1">
 
-        {/* ================= INTELLIGENCE ================= */}
-        <div className="grid lg:grid-cols-3 gap-5 mt-5">
+            <p className="text-[10px] uppercase tracking-wider text-white/35">
+              Sentiment
+            </p>
 
-          {/* Mentions */}
+            <p className="text-3xl font-black mt-2">
+              {sentimentScore > 0 ? "+" : ""}
+              {sentimentScore}
+            </p>
+
+            <p className="text-[10px] text-white/30 mt-1">
+              overall signal
+            </p>
+
+          </div>
+
+        </section>
+
+        {/* =====================================================
+            MAIN INTELLIGENCE GRID
+        ===================================================== */}
+        <section className="grid lg:grid-cols-3 gap-5 mt-5">
+
+          {/* MENTIONS FEED */}
           <div className="lg:col-span-2 p-6 rounded-2xl bg-[#111] border border-white/10">
 
-            <div className="flex items-center justify-between">
+            <div className="flex items-start justify-between gap-4">
 
               <div>
                 <h2 className="font-bold text-lg">
-                  Mentions Intelligence
+                  Live Intelligence Feed
                 </h2>
 
-                <p className="text-xs opacity-40 mt-1">
-                  Recent signals connected to your profile.
+                <p className="text-xs text-white/35 mt-1">
+                  Latest signals connected to your profile.
                 </p>
               </div>
 
-              <span className="text-xs opacity-40">
-                {filteredMentions.length} results
-              </span>
+              <div className="flex items-center gap-2">
+
+                <span className="w-2 h-2 rounded-full bg-[#00ff66] animate-pulse" />
+
+                <span className="text-[10px] uppercase text-[#00ff66] font-bold">
+                  Live
+                </span>
+
+              </div>
 
             </div>
 
             {filteredMentions.length === 0 ? (
-              <div className="text-center py-12">
 
-                <div className="text-4xl mb-3">
+              <div className="py-16 text-center">
+
+                <div className="w-16 h-16 mx-auto rounded-2xl bg-white/5 flex items-center justify-center text-2xl">
                   📡
                 </div>
 
-                <h3 className="font-bold">
-                  No mentions yet
+                <h3 className="font-bold mt-5">
+                  Intelligence feed is ready
                 </h3>
 
-                <p className="text-sm opacity-50 mt-2 max-w-md mx-auto">
-                  Your intelligence feed will appear here once mentions
-                  connected to your political profile are collected.
+                <p className="text-sm text-white/40 mt-2 max-w-md mx-auto">
+                  Mentions connected to your political profile will appear
+                  here as the monitoring engine collects them.
                 </p>
 
               </div>
+
             ) : (
+
               <div className="mt-5 space-y-2">
 
                 {filteredMentions.slice(0, 8).map((mention) => {
@@ -486,149 +706,332 @@ export default function Dashboard() {
                   return (
                     <div
                       key={mention.id}
-                      className="p-4 rounded-xl bg-black/40 border border-white/5 flex items-center justify-between"
+                      className="p-4 rounded-xl bg-black/40 border border-white/5 hover:border-white/10 transition"
                     >
-                      <div>
-                        <p className="text-sm font-medium">
-                          Political mention detected
-                        </p>
 
-                        <p className="text-xs opacity-40 mt-1">
-                          Sentiment analysis available
-                        </p>
+                      <div className="flex items-start justify-between gap-4">
+
+                        <div className="min-w-0">
+
+                          <div className="flex items-center gap-2">
+
+                            <span className="text-[10px] uppercase text-white/35">
+                              {mention.platform || "Source"}
+                            </span>
+
+                            <span className="text-white/10">
+                              •
+                            </span>
+
+                            <span className="text-[10px] text-white/30">
+                              Recent
+                            </span>
+
+                          </div>
+
+                          <p className="text-sm mt-2 line-clamp-2 text-white/75">
+                            {mention.content ||
+                              "Political mention detected."}
+                          </p>
+
+                        </div>
+
+                        <span
+                          className={`shrink-0 px-2.5 py-1.5 rounded-full text-[10px] uppercase font-bold ${
+                            sentiment === "positive"
+                              ? "bg-[#00ff66]/10 text-[#00ff66]"
+                              : sentiment === "negative"
+                              ? "bg-red-500/10 text-red-400"
+                              : sentiment === "neutral"
+                              ? "bg-white/10 text-white/50"
+                              : "bg-white/5 text-white/30"
+                          }`}
+                        >
+                          {sentiment}
+                        </span>
+
                       </div>
 
-                      <span
-                        className={`text-xs px-3 py-1.5 rounded-full ${
-                          sentiment === "positive"
-                            ? "bg-[#00ff66]/10 text-[#00ff66]"
-                            : sentiment === "negative"
-                            ? "bg-red-500/10 text-red-400"
-                            : sentiment === "neutral"
-                            ? "bg-white/10 text-white/60"
-                            : "bg-white/5 text-white/40"
-                        }`}
-                      >
-                        {sentiment}
-                      </span>
                     </div>
                   )
                 })}
 
               </div>
+
             )}
+
           </div>
 
-          {/* Plan */}
-          <div className="p-6 rounded-2xl bg-[#111] border border-white/10">
+          {/* RIGHT INTELLIGENCE PANEL */}
+          <div className="space-y-5">
 
-            <p className="text-xs uppercase tracking-widest opacity-40">
-              Your Access
-            </p>
+            {/* SENTIMENT */}
+            <div className="p-6 rounded-2xl bg-[#111] border border-white/10">
 
-            <h2 className="text-2xl font-bold mt-2">
-              {plan}
-            </h2>
+              <p className="text-[10px] uppercase tracking-widest text-white/35">
+                Sentiment Overview
+              </p>
 
-            <div className="mt-6 space-y-4">
+              <h2 className="text-2xl font-black mt-2">
+                {sentimentScore >= 0 ? "+" : ""}
+                {sentimentScore}
+              </h2>
 
-              <div className="flex justify-between text-sm">
-                <span className="opacity-50">
-                  Mention monitoring
-                </span>
+              <p className="text-xs text-white/35 mt-1">
+                Based on classified mentions
+              </p>
 
-                <span className="text-[#00ff66]">
-                  Enabled
-                </span>
+              <div className="mt-6 h-2 rounded-full bg-white/5 overflow-hidden">
+
+                <div
+                  className="h-full bg-[#00ff66] rounded-full transition-all"
+                  style={{
+                    width: `${Math.max(
+                      0,
+                      Math.min(
+                        100,
+                        50 + sentimentScore / 2
+                      )
+                    )}%`,
+                  }}
+                />
+
               </div>
 
-              <div className="flex justify-between text-sm">
-                <span className="opacity-50">
-                  County intelligence
-                </span>
+              <div className="grid grid-cols-3 gap-2 mt-5">
 
-                <span className="text-[#00ff66]">
-                  Enabled
-                </span>
-              </div>
+                <div>
+                  <p className="text-[10px] text-white/30">
+                    Positive
+                  </p>
+                  <p className="font-bold text-[#00ff66]">
+                    {positive}
+                  </p>
+                </div>
 
-              <div className="flex justify-between text-sm">
-                <span className="opacity-50">
-                  Ward intelligence
-                </span>
+                <div>
+                  <p className="text-[10px] text-white/30">
+                    Neutral
+                  </p>
+                  <p className="font-bold">
+                    {neutral}
+                  </p>
+                </div>
 
-                <span>
-                  {entitlement?.ward_intel
-                    ? "Enabled"
-                    : "Upgrade"}
-                </span>
-              </div>
+                <div>
+                  <p className="text-[10px] text-white/30">
+                    Negative
+                  </p>
+                  <p className="font-bold text-red-400">
+                    {negative}
+                  </p>
+                </div>
 
-              <div className="flex justify-between text-sm">
-                <span className="opacity-50">
-                  AI briefing
-                </span>
-
-                <span>
-                  {entitlement?.ai_briefing
-                    ? "Enabled"
-                    : "Upgrade"}
-                </span>
               </div>
 
             </div>
 
+            {/* PLAN */}
+            <div className="p-6 rounded-2xl bg-[#111] border border-white/10">
+
+              <div className="flex justify-between items-start">
+
+                <div>
+                  <p className="text-[10px] uppercase tracking-widest text-white/35">
+                    Current Plan
+                  </p>
+
+                  <h2 className="text-2xl font-black mt-2">
+                    {plan}
+                  </h2>
+                </div>
+
+                <span className="px-2.5 py-1 rounded-full bg-[#00ff66]/10 text-[#00ff66] text-[9px] uppercase font-bold">
+                  Active
+                </span>
+
+              </div>
+
+              <div className="mt-6">
+
+                <div className="flex justify-between text-xs">
+
+                  <span className="text-white/40">
+                    Mention usage
+                  </span>
+
+                  <span>
+                    {mentions.length}/{mentionLimit}
+                  </span>
+
+                </div>
+
+                <div className="mt-2 h-1.5 rounded-full bg-white/5 overflow-hidden">
+
+                  <div
+                    className="h-full bg-[#00ff66] rounded-full"
+                    style={{
+                      width: `${usagePercentage}%`,
+                    }}
+                  />
+
+                </div>
+
+              </div>
+
+              <div className="mt-5 space-y-3 text-xs">
+
+                <div className="flex justify-between">
+                  <span className="text-white/40">
+                    Ward Intelligence
+                  </span>
+
+                  <span>
+                    {entitlement?.ward_intel
+                      ? "Enabled"
+                      : "Upgrade"}
+                  </span>
+                </div>
+
+                <div className="flex justify-between">
+                  <span className="text-white/40">
+                    AI Briefing
+                  </span>
+
+                  <span>
+                    {entitlement?.ai_briefing
+                      ? "Enabled"
+                      : "Upgrade"}
+                  </span>
+                </div>
+
+              </div>
+
+            </div>
+
+          </div>
+
+        </section>
+
+        {/* =====================================================
+            QUICK ACTIONS
+        ===================================================== */}
+        <section className="mt-5">
+
+          <div className="flex items-center justify-between mb-3">
+
+            <div>
+              <h2 className="font-bold">
+                Command Center
+              </h2>
+
+              <p className="text-xs text-white/35 mt-1">
+                Manage your political intelligence workspace.
+              </p>
+            </div>
+
+          </div>
+
+          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+
+            <Link
+              href="/welcome"
+              className="group p-5 rounded-2xl bg-[#111] border border-white/10 hover:border-[#00ff66]/30 transition"
+            >
+              <div className="text-xl">
+                👤
+              </div>
+
+              <h3 className="font-bold mt-4">
+                Political Profile
+              </h3>
+
+              <p className="text-xs text-white/35 mt-1">
+                Update your political identity and profile.
+              </p>
+
+              <span className="inline-block mt-4 text-xs text-[#00ff66] group-hover:translate-x-1 transition">
+                Manage →
+              </span>
+            </Link>
+
             <Link
               href="/"
-              className="block text-center mt-7 px-4 py-3 rounded-xl bg-white/10 hover:bg-white/15 text-sm transition"
+              className="group p-5 rounded-2xl bg-[#111] border border-white/10 hover:border-[#00ff66]/30 transition"
             >
-              View Platform
+              <div className="text-xl">
+                📊
+              </div>
+
+              <h3 className="font-bold mt-4">
+                Intelligence
+              </h3>
+
+              <p className="text-xs text-white/35 mt-1">
+                Explore political monitoring and signals.
+              </p>
+
+              <span className="inline-block mt-4 text-xs text-[#00ff66] group-hover:translate-x-1 transition">
+                Explore →
+              </span>
+            </Link>
+
+            <Link
+              href="/"
+              className="group p-5 rounded-2xl bg-[#111] border border-white/10 hover:border-[#00ff66]/30 transition"
+            >
+              <div className="text-xl">
+                🚨
+              </div>
+
+              <h3 className="font-bold mt-4">
+                Alerts
+              </h3>
+
+              <p className="text-xs text-white/35 mt-1">
+                Monitor important political signals.
+              </p>
+
+              <span className="inline-block mt-4 text-xs text-[#00ff66] group-hover:translate-x-1 transition">
+                View →
+              </span>
+            </Link>
+
+            <Link
+              href="/admin"
+              className="group p-5 rounded-2xl bg-[#111] border border-white/10 hover:border-[#00ff66]/30 transition"
+            >
+              <div className="text-xl">
+                ⚙️
+              </div>
+
+              <h3 className="font-bold mt-4">
+                Management
+              </h3>
+
+              <p className="text-xs text-white/35 mt-1">
+                Configure your political tracking workspace.
+              </p>
+
+              <span className="inline-block mt-4 text-xs text-[#00ff66] group-hover:translate-x-1 transition">
+                Open →
+              </span>
             </Link>
 
           </div>
-        </div>
 
-        {/* ================= QUICK ACTIONS ================= */}
-        <div className="mt-5 grid sm:grid-cols-3 gap-3">
+        </section>
 
-          <Link
-            href="/welcome"
-            className="p-5 rounded-2xl bg-[#111] border border-white/10 hover:border-[#00ff66]/30 transition"
-          >
-            <div className="text-xl">👤</div>
-            <h3 className="font-bold mt-3">
-              Profile
-            </h3>
-            <p className="text-xs opacity-40 mt-1">
-              Manage your political profile.
-            </p>
-          </Link>
+        {/* FOOTER STATUS */}
+        <div className="mt-8 pb-4 flex flex-col sm:flex-row justify-between gap-2 text-[10px] text-white/25">
 
-          <Link
-            href="/admin"
-            className="p-5 rounded-2xl bg-[#111] border border-white/10 hover:border-[#00ff66]/30 transition"
-          >
-            <div className="text-xl">⚙️</div>
-            <h3 className="font-bold mt-3">
-              Management
-            </h3>
-            <p className="text-xs opacity-40 mt-1">
-              Manage tracker configuration.
-            </p>
-          </Link>
+          <span>
+            LEAD Political Intelligence Platform
+          </span>
 
-          <Link
-            href="/"
-            className="p-5 rounded-2xl bg-[#111] border border-white/10 hover:border-[#00ff66]/30 transition"
-          >
-            <div className="text-xl">📊</div>
-            <h3 className="font-bold mt-3">
-              Explore
-            </h3>
-            <p className="text-xs opacity-40 mt-1">
-              Explore the political intelligence platform.
-            </p>
-          </Link>
+          <span>
+            Secure session • Monitoring workspace active
+          </span>
 
         </div>
 
