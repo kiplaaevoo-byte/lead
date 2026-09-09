@@ -1,64 +1,371 @@
 ﻿"use client"
+
 import Link from "next/link"
 import { useEffect, useState } from "react"
+import { supabase } from "@/lib/supabase"
 
-export default function Page(){
-  const [count,setCount]=useState(14283)
-  useEffect(()=>{const i=setInterval(()=>setCount(c=>c+Math.floor(Math.random()*3)),2000); return ()=>clearInterval(i)},[])
+const features = [
+  {
+    icon: "📡",
+    title: "Mention Monitoring",
+    desc: "Track where your name appears across configured public sources.",
+  },
+  {
+    icon: "📈",
+    title: "Sentiment Analysis",
+    desc: "Positive / Neutral / Negative breakdown from your data.",
+  },
+  {
+    icon: "🗺️",
+    title: "County Intelligence",
+    desc: "See where conversations are happening by county.",
+  },
+  {
+    icon: "🔒",
+    title: "Private by Design",
+    desc: "Only you see your dashboard. No public ranking or listing.",
+  },
+]
 
-  return(
-    <div className="min-h-screen bg-[#050505] text-white">
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;600;800&display=swap');*{font-family:'Geist',sans-serif}`}</style>
-      <nav className="sticky top-0 z-50 backdrop-blur-xl bg-black/70 border-b border-white/[0.07]">
-        <div className="max-w-[1280px] mx-auto px-6 h-[68px] flex justify-between items-center">
-          <div className="flex items-center gap-2.5"><div className="w-8 h-8 rounded-full bg-[#00ff66] flex items-center justify-center text-black font-black text-[14px]">P</div><span className="font-black tracking-tight">POLITICAL TRACKER<span className="text-[#00ff66]">.KE</span></span><span className="ml-3 hidden md:inline-flex text-[10px] px-2.5 py-1 rounded-full bg-[#00ff66]/10 border border-[#00ff66]/20 text-[#00ff66]">● PRIVATE & ENCRYPTED • {count.toLocaleString()} SCANS/DAY</span></div>
-          <div className="flex gap-3"><Link href="/login" className="px-5 py-2.5 text-sm rounded-full border border-white/15">Login</Link><Link href="/register" className="px-6 py-2.5 text-sm rounded-full bg-[#00ff66] text-black font-bold">Create Profile</Link></div>
+export default function Home() {
+  const [loggedIn, setLoggedIn] = useState(false)
+
+  useEffect(() => {
+    const checkSession = async () => {
+      const { data } = await supabase.auth.getSession()
+      setLoggedIn(!!data.session)
+    }
+
+    checkSession()
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setLoggedIn(!!session)
+    })
+
+    return () => subscription.unsubscribe()
+  }, [])
+
+  return (
+    <main className="min-h-screen bg-[#050505] text-white overflow-hidden">
+      {/* Background */}
+      <div className="fixed inset-0 pointer-events-none">
+        <div className="absolute top-[-250px] left-1/2 -translate-x-1/2 w-[700px] h-[700px] rounded-full bg-[#00ff66]/5 blur-[140px]" />
+        <div className="absolute bottom-[-300px] right-[-200px] w-[600px] h-[600px] rounded-full bg-green-500/5 blur-[130px]" />
+      </div>
+
+      {/* Navigation */}
+      <nav className="relative z-10 max-w-7xl mx-auto px-5 md:px-8 py-5">
+        <div className="flex items-center justify-between">
+          <Link href="/" className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-[#00ff66] text-black flex items-center justify-center font-black">
+              PT
+            </div>
+
+            <div>
+              <div className="font-black tracking-tight">
+                POLITICAL TRACKER<span className="text-[#00ff66]">.KE</span>
+              </div>
+              <div className="text-[9px] uppercase tracking-[0.25em] text-white/40">
+                Political Intelligence
+              </div>
+            </div>
+          </Link>
+
+          <div className="flex items-center gap-2">
+            {loggedIn ? (
+              <Link
+                href="/dashboard"
+                className="px-4 py-2.5 rounded-xl bg-[#00ff66] text-black text-sm font-bold hover:bg-[#22ff7b] transition"
+              >
+                Dashboard →
+              </Link>
+            ) : (
+              <>
+                <Link
+                  href="/login"
+                  className="hidden sm:block px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-sm font-semibold hover:bg-white/10 transition"
+                >
+                  Login
+                </Link>
+
+                <Link
+                  href="/register"
+                  className="px-4 py-2.5 rounded-xl bg-[#00ff66] text-black text-sm font-bold hover:bg-[#22ff7b] transition"
+                >
+                  Create Profile
+                </Link>
+              </>
+            )}
+          </div>
         </div>
       </nav>
 
-      <div className="max-w-[1280px] mx-auto px-6">
-        <div className="pt-20 md:pt-28 pb-16 max-w-[820px]">
-          <div className="inline-flex gap-2 items-center text-[11px] tracking-widest px-4 py-1.5 rounded-full bg-white/[0.06] border border-white/10">🔒 100% PRIVATE • NO PUBLIC LEADERBOARD • ONLY YOU SEE YOUR DATA</div>
-          <h1 className="mt-8 text-[44px] md:text-[88px] font-[800] leading-[0.9] tracking-[-0.05em]">Your reputation.<br/><span className="text-white/30">Monitored</span> privately<br/>in <span className="text-[#00ff66]">real-time.</span></h1>
-          <p className="mt-6 text-[18px] text-white/60 leading-relaxed max-w-[600px]">We track what Kenyans say about YOU across X, Facebook, TikTok, Instagram & YouTube. <b className="text-white">No public lists. No leaks. Your dashboard is private to you only.</b></p>
-          <div className="mt-8 flex flex-wrap gap-3"><Link href="/register" className="px-9 py-4 rounded-full bg-[#00ff66] text-black font-bold text-[16px] shadow-[0_0_40px_rgba(0,255,102,0.4)]">Create Private Profile — Free 7 Days</Link><Link href="/login" className="px-9 py-4 rounded-full border border-white/15 bg-white/[0.03]">Login</Link></div>
-          <div className="mt-4 text-xs text-white/40">✓ 2-min setup • ✓ Encrypted • ✓ Private mentions • ✓ Real-time alerts</div>
+      {/* Hero */}
+      <section className="relative z-10 max-w-7xl mx-auto px-5 md:px-8 pt-20 md:pt-32 pb-20">
+        <div className="max-w-4xl">
+          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-[#00ff66]/20 bg-[#00ff66]/5 text-[#00ff66] text-xs font-semibold mb-7">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#00ff66]" />
+            PRIVATE POLITICAL INTELLIGENCE
+          </div>
+
+          <h1 className="text-5xl sm:text-6xl md:text-7xl font-black tracking-tighter leading-[0.95]">
+            Your political intelligence
+            <br />
+            <span className="text-[#00ff66]">command center.</span>
+          </h1>
+
+          <p className="mt-7 text-lg md:text-xl text-white/60 max-w-2xl leading-relaxed">
+            Monitor mentions, sentiment, alerts and signals connected to your
+            profile — privately. Built for leaders who need real-time awareness
+            without the noise.
+          </p>
+
+          <div className="mt-3 text-xs text-white/40">
+            Private dashboard • County intelligence • AI briefing • No public
+            profile
+          </div>
+
+          <div className="mt-9 flex flex-col sm:flex-row gap-3">
+            <Link
+              href={loggedIn ? "/dashboard" : "/register"}
+              className="px-6 py-4 rounded-2xl bg-[#00ff66] text-black font-black text-center hover:bg-[#22ff7b] transition shadow-[0_0_40px_rgba(0,255,102,0.12)]"
+            >
+              {loggedIn ? "Open Dashboard →" : "Create Private Profile →"}
+            </Link>
+
+            <Link
+              href={loggedIn ? "/dashboard" : "/login"}
+              className="px-6 py-4 rounded-2xl bg-white/5 border border-white/10 font-semibold text-center hover:bg-white/10 transition"
+            >
+              {loggedIn ? "View Intelligence" : "Sign In"}
+            </Link>
+          </div>
         </div>
 
-        <div className="grid md:grid-cols-3 gap-4 mt-2">
+        {/* Trust strip */}
+        <div className="mt-16 grid grid-cols-2 md:grid-cols-4 gap-3">
           {[
-            {icon:"🔒",title:"100% Private by Default",desc:"No demo. No public page. Your mentions are encrypted and tied to your phone only. Even we can't see other leaders' data."},
-            {icon:"⚡",title:"Live Scan Every 15min",desc:`We scan ${count.toLocaleString()} posts/day across all platforms for YOUR name, nickname, party.`},
-            {icon:"📊",title:"Real Sentiment For You",desc:"Positive / Negative / Neutral breakdown for YOUR name only. Track what voters really think about YOU."},
-          ].map(c=>(
-            <div key={c.title} className="rounded-2xl border border-white/10 bg-[#111] p-6"><div className="text-2xl">{c.icon}</div><div className="mt-3 font-bold">{c.title}</div><div className="mt-2 text-sm text-white/50 leading-relaxed">{c.desc}</div></div>
+            ["🔒", "Private Dashboard"],
+            ["📊", "Data-Driven"],
+            ["🗺️", "County Intelligence"],
+            ["🤖", "AI Ready"],
+          ].map(([icon, text]) => (
+            <div
+              key={text}
+              className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-4"
+            >
+              <div className="text-xl">{icon}</div>
+              <div className="mt-2 text-xs font-semibold text-white/60">
+                {text}
+              </div>
+            </div>
           ))}
         </div>
+      </section>
 
-        <div className="mt-16 rounded-[24px] border border-white/10 bg-[#0E0E0E] overflow-hidden">
-          <div className="p-6 md:p-8 flex justify-between items-center border-b border-white/10">
-            <div><div className="text-[11px] tracking-widest text-white/30">PREVIEW • REAL PRIVATE DASHBOARD</div><div className="mt-1 font-bold text-lg">This is YOUR private view after login</div></div>
-            <div className="hidden md:flex text-xs px-3 py-1.5 rounded-full bg-[#00ff66]/10 border border-[#00ff66]/20 text-[#00ff66]">● Encrypted • Private • Real Data</div>
-          </div>
-          <div className="p-6 grid md:grid-cols-3 gap-6 relative">
-            <div className="absolute inset-0 bg-gradient-to-t from-[#0E0E0E] via-[#0E0E0E]/80 to-transparent z-10 flex items-end justify-center pb-12"><Link href="/register" className="px-8 py-3 rounded-full bg-white text-black font-bold">Create Profile to Unlock Your Real Mentions →</Link></div>
-            <div className="blur-[6px] select-none pointer-events-none">
-              <div className="h-24 rounded-xl bg-white/[0.06] border border-white/10 p-4"><div className="text-xs text-white/30">SENTIMENT 24H</div><div className="mt-2 h-2 w-full bg-white/10 rounded"><div className="h-2 w-[68%] bg-[#00ff66] rounded"></div></div><div className="mt-2 text-sm font-bold">68% Positive ↑ Real</div></div>
-              <div className="mt-4 space-y-3">{[1,2,3].map(i=><div key={i} className="h-20 rounded-xl bg-white/[0.04] border border-white/10 p-4"><div className="text-xs text-white/40">X / Twitter • Real mention</div><div className="mt-1 text-sm text-white/70">Real voter comment about your leadership...</div></div>)}</div>
+      {/* Features */}
+      <section className="relative z-10 border-y border-white/10 bg-white/[0.015]">
+        <div className="max-w-7xl mx-auto px-5 md:px-8 py-20">
+          <div className="max-w-2xl mb-12">
+            <div className="text-[#00ff66] text-xs font-bold uppercase tracking-[0.25em]">
+              Intelligence Layer
             </div>
-            <div className="blur-[6px] select-none pointer-events-none md:col-span-2">
-              <div className="grid grid-cols-2 gap-4"><div className="h-32 rounded-xl bg-white/[0.04] border border-white/10 p-4"></div><div className="h-32 rounded-xl bg-white/[0.04] border border-white/10 p-4"></div></div>
-              <div className="mt-4 h-48 rounded-xl bg-white/[0.04] border border-white/10 p-4"><div className="text-xs text-white/30">REAL MENTIONS OVER TIME</div><div className="mt-8 flex items-end gap-1 h-20">{[40,60,30,80,50,90,70].map((h,i)=><div key={i} style={{height:`${h}%`}} className="flex-1 bg-[#00ff66]/60 rounded-t"></div>)}</div></div>
+
+            <h2 className="mt-3 text-3xl md:text-5xl font-black tracking-tight">
+              Know what is happening around your political profile.
+            </h2>
+
+            <p className="mt-4 text-white/50 leading-relaxed">
+              Political Tracker brings your configured intelligence signals
+              into one private command center.
+            </p>
+          </div>
+
+          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {features.map((feature) => (
+              <div
+                key={feature.title}
+                className="rounded-3xl border border-white/10 bg-white/[0.03] p-6 hover:border-[#00ff66]/20 hover:bg-white/[0.05] transition"
+              >
+                <div className="text-3xl">{feature.icon}</div>
+
+                <h3 className="mt-6 font-bold text-lg">{feature.title}</h3>
+
+                <p className="mt-3 text-sm text-white/45 leading-relaxed">
+                  {feature.desc}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Demo Preview */}
+      <section className="relative z-10 max-w-7xl mx-auto px-5 md:px-8 py-20">
+        <div className="flex flex-col md:flex-row md:items-end justify-between gap-5 mb-8">
+          <div>
+            <div className="text-[#00ff66] text-xs font-bold uppercase tracking-[0.25em]">
+              Product Preview
+            </div>
+
+            <h2 className="mt-3 text-3xl md:text-4xl font-black tracking-tight">
+              A private intelligence workspace.
+            </h2>
+          </div>
+
+          <span className="self-start md:self-auto text-[10px] px-2.5 py-1.5 rounded-full bg-white/10 border border-white/10 text-white/60 font-bold tracking-wider">
+            DEMO PREVIEW
+          </span>
+        </div>
+
+        <div className="rounded-[2rem] border border-white/10 bg-[#090909] overflow-hidden shadow-2xl">
+          {/* Mock dashboard header */}
+          <div className="border-b border-white/10 px-5 md:px-7 py-5 flex items-center justify-between">
+            <div>
+              <div className="text-xs text-white/40">POLITICAL TRACKER</div>
+              <div className="font-bold mt-1">Intelligence Overview</div>
+            </div>
+
+            <div className="text-[10px] px-2 py-1 rounded-full bg-white/10 text-white/50">
+              DEMO PREVIEW
+            </div>
+          </div>
+
+          {/* Mock KPI cards */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 p-5 md:p-7">
+            {[
+              ["📡", "Mentions", "Your data"],
+              ["📈", "Sentiment", "Your data"],
+              ["🚨", "Alerts", "Your data"],
+              ["🗺️", "County", "Your profile"],
+            ].map(([icon, title, value]) => (
+              <div
+                key={title}
+                className="rounded-2xl border border-white/10 bg-white/[0.03] p-5"
+              >
+                <div className="flex justify-between">
+                  <span className="text-xl">{icon}</span>
+                  <span className="text-[9px] text-white/30 uppercase">
+                    Preview
+                  </span>
+                </div>
+
+                <div className="mt-5 text-sm text-white/50">{title}</div>
+                <div className="mt-1 font-bold">{value}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Preview feed */}
+          <div className="px-5 md:px-7 pb-7">
+            <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-5">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-xs text-white/40">INTELLIGENCE FEED</div>
+                  <div className="font-bold mt-1">Sample briefing</div>
+                </div>
+
+                <span className="text-[10px] px-2 py-1 rounded-full bg-white/10 text-white/50">
+                  DEMO PREVIEW
+                </span>
+              </div>
+
+              <div className="mt-5 rounded-xl bg-white/[0.03] border border-white/5 p-4">
+                <div className="flex items-center gap-2 text-xs text-white/40">
+                  <span>Sample briefing</span>
+                  <span>•</span>
+                  <span>Demo</span>
+                </div>
+
+                <p className="mt-3 text-sm text-white/60 leading-relaxed">
+                  This is an example of how configured intelligence signals
+                  can appear in your private dashboard.
+                </p>
+              </div>
             </div>
           </div>
         </div>
+      </section>
 
-        <div className="mt-16 mb-20 rounded-[28px] bg-[#00ff66] p-10 md:p-16 text-center text-black">
-          <h2 className="text-[32px] md:text-[52px] font-[800] leading-[0.9] tracking-tight">No demos.<br/>No fake data.<br/>Just your real reputation.</h2>
-          <p className="mt-4 text-black/60 max-w-[500px] mx-auto">Create your private profile. Add your real name & keywords. See only YOUR real mentions.</p>
-          <Link href="/register" className="mt-8 inline-block px-10 py-4 rounded-full bg-black text-white font-bold">Create Real Private Profile</Link>
+      {/* Privacy */}
+      <section className="relative z-10 border-t border-white/10">
+        <div className="max-w-7xl mx-auto px-5 md:px-8 py-20">
+          <div className="rounded-[2rem] border border-[#00ff66]/10 bg-[#00ff66]/[0.025] p-7 md:p-12">
+            <div className="max-w-3xl">
+              <div className="text-4xl">🔐</div>
+
+              <h2 className="mt-5 text-3xl md:text-4xl font-black">
+                Private by design.
+              </h2>
+
+              <p className="mt-4 text-white/50 leading-relaxed">
+                Your political intelligence dashboard is designed around
+                account-level privacy. Your data is tied to your authenticated
+                profile rather than displayed through public leaderboards or
+                public politician listings.
+              </p>
+
+              <div className="mt-7 flex flex-wrap gap-2">
+                {[
+                  "Authenticated access",
+                  "Private dashboard",
+                  "No public ranking",
+                  "Configured sources",
+                ].map((item) => (
+                  <span
+                    key={item}
+                    className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-xs text-white/60"
+                  >
+                    ✓ {item}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
         </div>
-      </div>
-    </div>
+      </section>
+
+      {/* CTA */}
+      <section className="relative z-10 max-w-4xl mx-auto px-5 py-24 text-center">
+        <div className="text-[#00ff66] text-xs font-bold uppercase tracking-[0.25em]">
+          Political intelligence
+        </div>
+
+        <h2 className="mt-4 text-4xl md:text-6xl font-black tracking-tight">
+          Build your private command center.
+        </h2>
+
+        <p className="mt-5 text-white/50 max-w-xl mx-auto">
+          Create your profile and start building your political intelligence
+          workspace.
+        </p>
+
+        <Link
+          href={loggedIn ? "/dashboard" : "/register"}
+          className="inline-block mt-8 px-7 py-4 rounded-2xl bg-[#00ff66] text-black font-black hover:bg-[#22ff7b] transition"
+        >
+          {loggedIn ? "Open Dashboard →" : "Create Private Profile →"}
+        </Link>
+      </section>
+
+      {/* Footer */}
+      <footer className="relative z-10 border-t border-white/10">
+        <div className="max-w-7xl mx-auto px-5 md:px-8 py-7 flex flex-col sm:flex-row justify-between gap-3 text-xs text-white/30">
+          <div>© {new Date().getFullYear()} Political Tracker.ke</div>
+
+          <div className="flex gap-5">
+            <Link href="/login" className="hover:text-white transition">
+              Login
+            </Link>
+
+            <Link href="/register" className="hover:text-white transition">
+              Create Profile
+            </Link>
+          </div>
+        </div>
+      </footer>
+    </main>
   )
 }
