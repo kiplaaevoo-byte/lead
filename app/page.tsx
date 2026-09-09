@@ -353,7 +353,7 @@ export default function Home() {
       {/* Footer */}
       <footer className="relative z-10 border-t border-white/10">
         <div className="max-w-7xl mx-auto px-5 md:px-8 py-7 flex flex-col sm:flex-row justify-between gap-3 text-xs text-white/30">
-          <div>© {new Date().getFullYear()} Political Tracker.ke</div>
+          <div>© Political Tracker.ke</div>
 
           <div className="flex gap-5">
             <Link href="/login" className="hover:text-white transition">
